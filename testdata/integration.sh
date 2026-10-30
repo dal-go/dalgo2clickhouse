@@ -42,6 +42,38 @@ failure_diagnostics() {
   diagnostic state docker inspect --format 'status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}' "$fixture"
   diagnostic stats docker stats --no-stream --format 'memory={{.MemUsage}} memory_percent={{.MemPerc}} pids={{.PIDs}} cpu={{.CPUPerc}}' "$fixture"
   diagnostic threads docker top "$fixture" -eo pid,ppid,nlwp,comm
+  # The daemon can enumerate our container's threads even if SQL is blocked or
+  # docker exec cannot create a process. Never request command-line arguments.
+  echo '--- ClickHouse fixture: thread names and wait channels ---' >&2
+  if capture "$diagnostics/thread-details" docker top "$fixture" -eLo pid,ppid,lwp,stat,comm,wchan:32; then
+    LC_ALL=C awk 'NR > 1 { counts[$5 " state=" $4 " wait=" $6]++ }
+      END { for (name in counts) print counts[name], name }' "$diagnostics/thread-details" |
+      LC_ALL=C sort -nr >"$diagnostics/thread-counts"
+    excerpt "$diagnostics/thread-counts"
+  else
+    echo 'Thread enumeration failed or reached its output/time limit.' >&2
+    excerpt "$diagnostics/thread-details"
+  fi
+  # OS-only metadata remains useful when even system.processes cannot execute.
+  # Read only selected process/cgroup counters, never cmdline, environ or config.
+  diagnostic proc-status docker exec "$fixture" sh -c '
+    for process in /proc/[0-9]*; do
+      IFS= read -r name < "$process/comm" || continue
+      case "$name" in clickhouse|clickhouse-serv|clickhouse-clie|entrypoint.sh) ;; *) continue ;; esac
+      printf "process=%s name=%s\n" "${process##*/}" "$name"
+      while IFS= read -r line; do
+        case "$line" in
+          State:*|PPid:*|Threads:*|VmRSS:*|voluntary_ctxt_switches:*|nonvoluntary_ctxt_switches:*) printf "%s\n" "$line" ;;
+        esac
+      done < "$process/status"
+      if IFS= read -r channel < "$process/wchan"; then printf "wait=%s\n" "$channel"; fi
+    done
+    for counter in /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.max /sys/fs/cgroup/pids.events /sys/fs/cgroup/memory.events; do
+      [ -r "$counter" ] || continue
+      printf "%s\n" "$counter"
+      while IFS= read -r line; do printf "%s\n" "$line"; done < "$counter"
+    done
+  '
   # Do not print system.processes.query: initialization includes a plaintext
   # synthetic password. Extract only an anchored DDL/INSERT verb+identifier;
   # no expressions, literals, settings, INSERT data or complete SQL can match.

@@ -4,10 +4,16 @@
          https://clickhouse.com/docs/reference/settings/server-settings/settings/max-thread
          https://clickhouse.com/docs/reference/settings/server-settings/settings/background
          https://clickhouse.com/docs/reference/settings/server-settings/settings/background-schedule
-         The default MergeTree merge pool is retained, with its existing
-         free-entry validation thresholds. Actual image boot is a CI gate. -->
+         MergeTree thresholds must fit pool size * concurrency ratio; see
+         https://clickhouse.com/docs/reference/settings/server-settings/settings/background#background_pool_size
+         and the sanityCheck in upstream 26.10.2.103 MergeTreeSettings.cpp.
+         Explicit small positive thresholds preserve that validation. This is
+         a fixture tuning candidate, not proof of the startup failure cause.
+         Actual image boot and every real assertion remain CI gates. -->
     <max_thread_pool_size>64</max_thread_pool_size>
     <max_thread_pool_free_size>8</max_thread_pool_free_size>
+    <background_pool_size>2</background_pool_size>
+    <background_merges_mutations_concurrency_ratio>2</background_merges_mutations_concurrency_ratio>
     <background_schedule_pool_size>4</background_schedule_pool_size>
     <background_buffer_flush_schedule_pool_size>1</background_buffer_flush_schedule_pool_size>
     <background_message_broker_schedule_pool_size>1</background_message_broker_schedule_pool_size>
@@ -15,6 +21,12 @@
     <background_move_pool_size>1</background_move_pool_size>
     <background_fetches_pool_size>2</background_fetches_pool_size>
     <background_common_pool_size>2</background_common_pool_size>
+    <merge_tree>
+        <!-- Positive free-entry reserves below the four-task executor capacity. -->
+        <number_of_free_entries_in_pool_to_lower_max_size_of_merge>1</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+        <number_of_free_entries_in_pool_to_execute_mutation>1</number_of_free_entries_in_pool_to_execute_mutation>
+        <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>1</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+    </merge_tree>
     <access_control_improvements>
         <settings_constraints_replace_previous>true</settings_constraints_replace_previous>
     </access_control_improvements>
