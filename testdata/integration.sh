@@ -22,7 +22,7 @@ excerpt() {
   [[ -f "$1" ]] || return 0
   tail -n 60 "$1" | LC_ALL=C awk '
     {
-      if (tolower($0) ~ /password|passwd|authorization|access_token|secret|stack trace|stacktrace/) {
+      if (tolower($0) ~ /password|passwd|authorization|access_token|synthetic-reader|secret_key|secret[[:space:]]*[:=]|stack trace|stacktrace/ || $0 ~ /^[0-9]+\. /) {
         print "[diagnostic line redacted]"
       } else {
         print substr($0, 1, 1024)
@@ -42,6 +42,12 @@ failure_diagnostics() {
   diagnostic state docker inspect --format 'status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}' "$fixture"
   diagnostic stats docker stats --no-stream --format 'memory={{.MemUsage}} memory_percent={{.MemPerc}} pids={{.PIDs}} cpu={{.CPUPerc}}' "$fixture"
   diagnostic threads docker top "$fixture" -eo pid,ppid,nlwp,comm
+  # Do not print system.processes.query: initialization includes a plaintext
+  # synthetic password. Extract only an anchored DDL/INSERT verb+identifier;
+  # no expressions, literals, settings, INSERT data or complete SQL can match.
+  diagnostic active-statements docker exec "$fixture" clickhouse-client --max_threads=1 --max_execution_time=2 --query "SELECT query_id, query_kind, round(elapsed,3) AS elapsed, read_rows, written_rows, length(thread_ids) AS threads, extract(query, '(?is)^[[:space:]]*((?:CREATE[[:space:]]+(?:DATABASE|TABLE|USER|SETTINGS[[:space:]]+PROFILE)|INSERT[[:space:]]+INTO)[[:space:]]+[A-Za-z_][A-Za-z0-9_.]*)') AS statement_identifier FROM system.processes WHERE query_id != currentQueryID() ORDER BY elapsed DESC LIMIT 8 FORMAT TSVWithNames"
+  diagnostic catalog-progress docker exec "$fixture" clickhouse-client --max_threads=1 --max_execution_time=2 --query "SELECT 'database' AS kind, name AS object, engine FROM system.databases WHERE name IN ('explore','forbidden') UNION ALL SELECT 'table' AS kind, concat(database,'.',name) AS object, engine FROM system.tables WHERE database IN ('explore','forbidden') LIMIT 10 FORMAT TSVWithNames"
+  diagnostic thread-pools docker exec "$fixture" clickhouse-client --max_threads=1 --max_execution_time=2 --query "SELECT metric, value FROM system.metrics WHERE metric IN ('GlobalThread','GlobalThreadActive','GlobalThreadScheduled') OR startsWith(metric,'Background') ORDER BY if(startsWith(metric,'GlobalThread'),0,1), metric LIMIT 48 FORMAT TSVWithNames"
   echo '--- ClickHouse fixture: last readiness stderr ---' >&2
   excerpt "$diagnostics/readiness.err"
   echo '--- ClickHouse fixture: last readiness stdout ---' >&2
@@ -82,7 +88,16 @@ docker run --detach --name "$fixture" --memory=2g --memory-swap=2g --cpus=2 --pi
   clickhouse/clickhouse-server:26.10.3.7@sha256:739e099abd1157390960a59e4532d21781d8fde57e6e4151cb920ea02c30b1ce >/dev/null
 ready=false
 for attempt in {1..60}; do
-  if (ulimit -f 2048; timeout --kill-after=1s 2s docker exec "$fixture" clickhouse-client --query "SELECT count() FROM explore.events" >"$diagnostics/readiness.out" 2>"$diagnostics/readiness.err") && grep -qx 3 "$diagnostics/readiness.out"; then ready=true; break; fi
+  # The image starts a temporary loopback server for init scripts, then stops
+  # it and execs the final server as PID 1. A row count on the temporary server
+  # can pass before account/profile initialization and the final restart.
+  if (ulimit -f 2048; timeout --kill-after=1s 2s docker exec "$fixture" sh -c '
+    case "$(cat /proc/1/comm)" in
+      clickhouse|clickhouse-serv) ;;
+      *) echo "ClickHouse image initialization is still running." >&2; exit 1 ;;
+    esac
+    exec clickhouse-client --user fixture_reader --password synthetic-reader --query "SELECT count() FROM explore.events"
+  ' >"$diagnostics/readiness.out" 2>"$diagnostics/readiness.err") && grep -qx 3 "$diagnostics/readiness.out"; then ready=true; break; fi
   sleep 1
 done
 [[ "$ready" == true ]] || { echo 'ClickHouse synthetic fixture did not initialize' >&2; exit 1; }
