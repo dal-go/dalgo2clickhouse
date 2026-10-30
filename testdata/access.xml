@@ -1,0 +1,21 @@
+<clickhouse>
+    <!-- Small synthetic fixture: keep global workers and background schedulers
+         below the container's 128-PID ceiling. Setting names are documented at
+         https://clickhouse.com/docs/reference/settings/server-settings/settings/max-thread
+         https://clickhouse.com/docs/reference/settings/server-settings/settings/background
+         https://clickhouse.com/docs/reference/settings/server-settings/settings/background-schedule
+         The default MergeTree merge pool is retained, with its existing
+         free-entry validation thresholds. Actual image boot is a CI gate. -->
+    <max_thread_pool_size>64</max_thread_pool_size>
+    <max_thread_pool_free_size>8</max_thread_pool_free_size>
+    <background_schedule_pool_size>4</background_schedule_pool_size>
+    <background_buffer_flush_schedule_pool_size>1</background_buffer_flush_schedule_pool_size>
+    <background_message_broker_schedule_pool_size>1</background_message_broker_schedule_pool_size>
+    <background_distributed_schedule_pool_size>1</background_distributed_schedule_pool_size>
+    <background_move_pool_size>1</background_move_pool_size>
+    <background_fetches_pool_size>2</background_fetches_pool_size>
+    <background_common_pool_size>2</background_common_pool_size>
+    <access_control_improvements>
+        <settings_constraints_replace_previous>true</settings_constraints_replace_previous>
+    </access_control_improvements>
+</clickhouse>
