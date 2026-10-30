@@ -129,12 +129,14 @@ bash testdata/integration.sh
 That Linux-only script owns one disposable container limited to 2 GiB memory,
 zero swap, two CPUs and 128 PIDs, with random loopback ports. Its documented
 global/background worker settings are reduced for this small fixture, including
-two merge/mutation workers, a concurrency ratio of two and three positive
-free-entry thresholds of one. The [related MergeTree thresholds](https://clickhouse.com/docs/reference/settings/server-settings/settings/background#background_pool_size)
+two merge/mutation workers, one streaming-scheduler worker, a concurrency ratio
+of two and three positive free-entry thresholds of one. The [related MergeTree thresholds](https://clickhouse.com/docs/reference/settings/server-settings/settings/background#background_pool_size)
 must fit the executor's four-task capacity. This tuning is a candidate to test,
 not confirmation that the observed initialization stall is pool starvation.
 Failure diagnostics include thread-name/wait-channel counts and selected process
-and cgroup counters without depending on SQL. Actual startup under those limits
+and cgroup counters without depending on SQL. Metadata-file presence reports
+database/table metadata persistence without claiming DDL or row insertion
+completed. Actual startup under those limits
 remains a mandatory CI check. It initializes
 synthetic data and a read-only profile, runs the real
 driver tests and removes only its own container. Missing server configuration

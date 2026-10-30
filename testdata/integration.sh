@@ -68,6 +68,12 @@ failure_diagnostics() {
       done < "$process/status"
       if IFS= read -r channel < "$process/wchan"; then printf "wait=%s\n" "$channel"; fi
     done
+    # File presence records metadata persistence without SQL or metadata contents.
+    # It does not establish that DDL or row insertion completed successfully.
+    for object in /var/lib/clickhouse/metadata/explore.sql /var/lib/clickhouse/metadata/forbidden.sql /var/lib/clickhouse/metadata/forbidden/secret.sql /var/lib/clickhouse/metadata/explore/events.sql; do
+      if [ -e "$object" ]; then printf "metadata-present=%s\n" "$object";
+      else printf "metadata-missing=%s\n" "$object"; fi
+    done
     for counter in /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.max /sys/fs/cgroup/pids.events /sys/fs/cgroup/memory.events; do
       [ -r "$counter" ] || continue
       printf "%s\n" "$counter"

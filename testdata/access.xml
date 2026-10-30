@@ -15,6 +15,9 @@
     <background_pool_size>2</background_pool_size>
     <background_merges_mutations_concurrency_ratio>2</background_merges_mutations_concurrency_ratio>
     <background_schedule_pool_size>4</background_schedule_pool_size>
+    <!-- Idle streaming schedulers retain global workers. This fixture has no
+         streaming engine; keep one positive worker and preserve all checks. -->
+    <background_streaming_schedule_pool_size>1</background_streaming_schedule_pool_size>
     <background_buffer_flush_schedule_pool_size>1</background_buffer_flush_schedule_pool_size>
     <background_message_broker_schedule_pool_size>1</background_message_broker_schedule_pool_size>
     <background_distributed_schedule_pool_size>1</background_distributed_schedule_pool_size>
