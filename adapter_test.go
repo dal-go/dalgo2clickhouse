@@ -32,17 +32,26 @@ type fakeSource struct {
 	queryErr, lateErr error
 	wait              bool
 	closed            int
+	connects          int
 }
 type fakeConnector struct{ source *fakeSource }
 
-func (c fakeConnector) Connect(context.Context) (driver.Conn, error) { return &fakeConn{c.source}, nil }
-func (c fakeConnector) Driver() driver.Driver                        { return fakeDriver{} }
+func (c fakeConnector) Connect(context.Context) (driver.Conn, error) {
+	c.source.mu.Lock()
+	c.source.connects++
+	c.source.mu.Unlock()
+	return &fakeConn{c.source}, nil
+}
+func (c fakeConnector) Driver() driver.Driver { return fakeDriver{} }
 
 type fakeDriver struct{}
 
 func (fakeDriver) Open(string) (driver.Conn, error) { return nil, errors.New("unused") }
 
 type fakeConn struct{ source *fakeSource }
+
+// Match the pinned ClickHouse driver's NamedValueChecker: retain exact values.
+func (*fakeConn) CheckNamedValue(*driver.NamedValue) error { return nil }
 
 func (*fakeConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("prepare forbidden") }
 func (*fakeConn) Close() error                        { return nil }
@@ -121,7 +130,7 @@ func TestCompileDoesNotInterpolateValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "SELECT `label` AS `display` FROM `explore`.`events` WHERE (`label` = ? OR `label` IS NULL) ORDER BY `id` DESC LIMIT 2 OFFSET 0"
+	want := "SELECT `events`.`label` AS `display` FROM `explore`.`events` WHERE (`events`.`label` = ? OR `events`.`label` IS NULL) ORDER BY `events`.`id` DESC LIMIT 2 OFFSET 0"
 	if p.sql != want || !reflect.DeepEqual(p.args, []any{value}) || strings.Contains(p.sql, value) {
 		t.Fatalf("unsafe plan: %#v", p)
 	}
@@ -147,7 +156,7 @@ func TestCompileRefusesUnsupportedBeforeIO(t *testing.T) {
 	}
 	c.Tables["events"] = []string{"label"}
 	p, err := compile(structured(2), c)
-	if err != nil || !strings.HasPrefix(p.sql, "SELECT `label` FROM") {
+	if err != nil || !strings.HasPrefix(p.sql, "SELECT `events`.`label` FROM") {
 		t.Fatal(p, err)
 	}
 	q := dal.From(dal.NewRootCollectionRef("events", "")).NewQuery().Limit(1).WhereField("id", dal.Equal, 1).SelectIntoRecordset()
@@ -186,7 +195,7 @@ func TestConfigCopiesScopeAndRedacts(t *testing.T) {
 		}
 	}
 	for _, value := range []any{nil, math.Inf(1), math.NaN(), []int{1}, &struct{}{}} {
-		if scalar(value) {
+		if _, err := boundScalar(value); err == nil {
 			t.Fatalf("unsupported bound value admitted: %T", value)
 		}
 	}
@@ -242,7 +251,7 @@ func TestNativeValuesAndDuplicateRowsSurvive(t *testing.T) {
 }
 
 func TestNoPartialResultsOrSecretErrors(t *testing.T) {
-	for _, kind := range []string{"late", "overflow", "bytes", "query", "duplicates"} {
+	for _, kind := range []string{"late", "overflow", "bytes", "query", "empty-column"} {
 		t.Run(kind, func(t *testing.T) {
 			f := &fakeSource{readonly: 1, columns: []string{"id"}, types: []reflect.Type{reflect.TypeOf(uint64(0))}, rows: [][]driver.Value{{uint64(1)}}}
 			d := fakeDatabase(t, f)
@@ -256,9 +265,8 @@ func TestNoPartialResultsOrSecretErrors(t *testing.T) {
 				d.cfg.MaxBytes = 1
 			case "query":
 				f.queryErr = errors.New("credential=secret SELECT private")
-			case "duplicates":
-				f.columns = []string{"id", "id"}
-				f.types = append(f.types, reflect.TypeOf(uint64(0)))
+			case "empty-column":
+				f.columns = []string{""}
 			}
 			r, err := d.QueryNative(context.Background(), "SELECT private")
 			if err == nil || r != nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "private") || errors.Is(err, io.EOF) {
