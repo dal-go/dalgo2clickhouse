@@ -38,10 +38,54 @@ diagnostic() {
   fi
   excerpt "$diagnostics/$name"
 }
+global_pool_diagnostics() {
+  echo '--- ClickHouse fixture: global pool atomic metrics ---' >&2
+  # Port 9363 belongs only to this container and has no Docker publication.
+  # Capture the HTTP response privately under the existing 2 MiB/5s ceiling;
+  # never print the raw response, headers, labels or an HTTP error body.
+  if ! capture "$diagnostics/global-pool-response" docker exec "$fixture" bash -c '
+    exec 3<>/dev/tcp/127.0.0.1/9363 || exit 1
+    printf "GET /metrics HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3
+    cat <&3
+  '; then
+    echo 'Global pool metrics request failed or reached its output/time limit.' >&2
+    return 0
+  fi
+  if ! LC_ALL=C awk '
+    NR == 1 {
+      sub(/\r$/, "")
+      if ($0 !~ /^HTTP\/1\.[01] 200([[:space:]]|$)/) bad = 1
+      next
+    }
+    !body {
+      sub(/\r$/, "")
+      if ($0 == "") body = 1
+      next
+    }
+    {
+      sub(/\r$/, "")
+      if ($0 ~ /^ClickHouseMetrics_GlobalThread(Active|Scheduled)?([[:space:]]|[{]|$)/) {
+        if (NF != 2 || $1 !~ /^ClickHouseMetrics_GlobalThread(Active|Scheduled)?$/ || $2 !~ /^[0-9]+$/ || ++counts[$1] != 1) bad = 1
+        values[$1] = $2
+      }
+    }
+    END {
+      split("ClickHouseMetrics_GlobalThread ClickHouseMetrics_GlobalThreadActive ClickHouseMetrics_GlobalThreadScheduled", names, " ")
+      for (i = 1; i <= 3; i++) if (counts[names[i]] != 1) bad = 1
+      if (bad || !body) exit 1
+      for (i = 1; i <= 3; i++) print names[i], values[names[i]]
+    }
+  ' "$diagnostics/global-pool-response" >"$diagnostics/global-pool-metrics"; then
+    echo 'Global pool metrics response was malformed or missing unique numeric counters.' >&2
+    return 0
+  fi
+  excerpt "$diagnostics/global-pool-metrics"
+}
 failure_diagnostics() {
   diagnostic state docker inspect --format 'status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}' "$fixture"
   diagnostic stats docker stats --no-stream --format 'memory={{.MemUsage}} memory_percent={{.MemPerc}} pids={{.PIDs}} cpu={{.CPUPerc}}' "$fixture"
   diagnostic threads docker top "$fixture" -eo pid,ppid,nlwp,comm
+  global_pool_diagnostics
   # The daemon can enumerate our container's threads even if SQL is blocked or
   # docker exec cannot create a process. Never request command-line arguments.
   echo '--- ClickHouse fixture: thread names and wait channels ---' >&2

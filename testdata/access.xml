@@ -24,6 +24,14 @@
     <background_move_pool_size>1</background_move_pool_size>
     <background_fetches_pool_size>2</background_fetches_pool_size>
     <background_common_pool_size>2</background_common_pool_size>
+    <!-- Fixture-owned metrics-only listener; never published by Docker. -->
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <metrics>true</metrics>
+        <events>false</events>
+        <asynchronous_metrics>false</asynchronous_metrics>
+    </prometheus>
     <merge_tree>
         <!-- Positive free-entry reserves below the four-task executor capacity. -->
         <number_of_free_entries_in_pool_to_lower_max_size_of_merge>1</number_of_free_entries_in_pool_to_lower_max_size_of_merge>

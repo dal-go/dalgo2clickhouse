@@ -136,7 +136,11 @@ not confirmation that the observed initialization stall is pool starvation.
 Failure diagnostics include thread-name/wait-channel counts and selected process
 and cgroup counters without depending on SQL. Metadata-file presence reports
 database/table metadata persistence without claiming DDL or row insertion
-completed. Actual startup under those limits
+completed. A metrics-only listener on port 9363 stays inside the owned container,
+with no Docker port publication. On failure, a private HTTP capture uses the
+same 2 MiB/five-second limits and prints only the three validated global-thread
+counters; the existing teardown removes this listener with its container.
+Actual startup under those limits
 remains a mandatory CI check. It initializes
 synthetic data and a read-only profile, runs the real
 driver tests and removes only its own container. Missing server configuration
