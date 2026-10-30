@@ -276,10 +276,9 @@ func (d *Database) QueryNative(ctx context.Context, statement string, args ...an
 	if len(statement) == 0 || len(statement) > 64<<10 || len(args) > 256 {
 		return nil, ErrLimit
 	}
-	for _, arg := range args {
-		if !scalar(arg) {
-			return nil, dal.ErrNotSupported
-		}
+	bound, err := boundArguments(args)
+	if err != nil {
+		return nil, err
 	}
-	return d.read(ctx, statement, args, "clickhouse-native")
+	return d.read(ctx, statement, bound, "clickhouse-native")
 }

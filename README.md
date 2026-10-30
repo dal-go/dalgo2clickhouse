@@ -27,12 +27,20 @@ results or the presence of this code.
 - An operation has one deadline, one leased SQL connection and finite row/value
   budgets. It fully materializes the result, checks EOF and closes the SQL rows
   and lease before returning a reader. A stream error, row overflow, byte
-  overflow, duplicate output column or unsupported value returns no partial
+  overflow, empty output column label or unsupported value returns no partial
   reader. The byte budget accounts for copied native values and container slots;
   it is not a measurement of wire bytes. Server-side profile limits bound server
   work and driver buffering separately.
 - MergeTree sorting/primary indexes do not imply unique records. Duplicate rows
-  remain duplicate rows. Point Get/Exists/GetMulti, durable record keys,
+  remain duplicate rows. Duplicate output labels and repeated projections retain
+  their original column order and values. Read them by ordinal index; name-based
+  lookup is ambiguous and a map would collapse columns. Identical structured
+  projections may repeat a label; different expressions with the same output
+  label are refused before I/O, matching ClickHouse alias semantics. Native SQL
+  reaches the server unchanged and backend alias failures remain sealed.
+  Structured projection, predicate and ordering fields are qualified against the
+  actual source table, so a SELECT alias cannot change a source or policy filter.
+  Point Get/Exists/GetMulti, durable record keys,
   `RecordsReader`, write sessions, callback transactions and cursors are
   unsupported. Structured joins, grouping, aggregate expressions, subqueries,
   membership/array filters, NULL comparisons and wildcard exclusions are refused.
@@ -95,6 +103,26 @@ For native SQL, enable `Config.NativeSQL` deliberately and obtain
 accepts SQL and scalar parameters under the server credential. Its result must
 fit the configured limits; `SELECT ... LIMIT n` is useful, but unbounded SQL is
 also subject to server and materialization limits and is never silently cut off.
+
+Pass named parameters as `sql.Named("id", value)` and use the driver's typed
+server placeholders such as `{id:UInt64}` or `{amount:Decimal(38,9)}`. Names
+remain names, SQL is passed unchanged to the pinned driver, and positional and
+named styles cannot be mixed. Duplicate, malformed or nested names are refused
+before I/O. Exact integer `json.Number` tokens and `*big.Int` values fit the
+ClickHouse Int256/UInt256 range; fractional/exponent JSON numbers and
+`decimal.Decimal` values fit at most 76 decimal digits and scale 76. Exact
+values are copied without passing through floats. Non-finite floats, unsafe
+integer-valued floats, nested values and custom Valuers/Stringers are refused.
+An explicit nil native parameter binds SQL NULL; a structured null comparison
+still requires an IS NULL condition.
+
+`dal.As[dalgo2clickhouse.StructuredQueryValidator](db)` exposes the pure
+`ValidateStructuredQuery` preflight, backed by the execution compiler. Policy
+preparers must guard both the original AST and the effective AST. A valid
+`dal.Param` is accepted only in a supported comparison's scalar value position
+for this preflight; it must be substituted before execution, which rejects
+unresolved parameters before acquiring a connection. Preflight neither performs
+I/O nor authorizes the read, native SQL, or a policy bypass.
 
 `dal.As[dbschema.SchemaReader](db)` exposes permitted tables, ordered columns,
 native type/default metadata and real non-unique data-skipping index names.

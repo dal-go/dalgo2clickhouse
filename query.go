@@ -1,11 +1,9 @@
 package dalgo2clickhouse
 
 import (
-	"math"
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/dal-go/dalgo/dal"
 )
@@ -13,6 +11,24 @@ import (
 type plan struct {
 	sql  string
 	args []any
+}
+
+// StructuredQueryValidator is an optional, pure preflight capability. A policy
+// preparer must validate both the original AST and the effective AST with the
+// same method before executing either. It does not authorize native SQL.
+type StructuredQueryValidator interface {
+	ValidateStructuredQuery(dal.Query) error
+}
+
+// ValidateStructuredQuery runs the execution compiler against this database's
+// immutable relation/column scope and bounds. A valid dal.Param may occur only
+// in a supported comparison's scalar value position, so policy preparers can
+// guard the original AST before substitution as well as the effective AST.
+// Execution still refuses unresolved parameters before I/O. This method acquires
+// no connection, changes no query, and neither authorizes nor executes a policy.
+func (d *Database) ValidateStructuredQuery(query dal.Query) error {
+	_, err := compileWithParameters(query, d.cfg, true)
+	return err
 }
 
 func quote(name string) string { return "`" + name + "`" }
@@ -44,10 +60,11 @@ func tableRef(q dal.StructuredQuery, c Config) (dal.CollectionRef, error) {
 }
 
 type compiler struct {
-	cfg          Config
-	table, alias string
-	args         []any
-	conditions   int
+	cfg             Config
+	table, alias    string
+	args            []any
+	conditions      int
+	allowParameters bool
 }
 
 func (b *compiler) field(expr dal.Expression) (string, error) {
@@ -68,12 +85,19 @@ func (b *compiler) field(expr dal.Expression) (string, error) {
 			return "", dal.ErrNotSupported
 		}
 	}
-	return quote(f.Name()), nil
+	// The emitted FROM has no SQL alias. Qualify physical source columns by its
+	// table name so ClickHouse's global SELECT aliases cannot rewrite a predicate
+	// or ordering expression into a different column (including a policy filter).
+	return quote(b.table) + "." + quote(f.Name()), nil
 }
 
 func compile(query dal.Query, c Config) (plan, error) {
+	return compileWithParameters(query, c, false)
+}
+
+func compileWithParameters(query dal.Query, c Config, allowParameters bool) (plan, error) {
 	q, ok := query.(dal.StructuredQuery)
-	if !ok || q == nil {
+	if !ok || q == nil || reflect.ValueOf(q).Kind() == reflect.Pointer && reflect.ValueOf(q).IsNil() {
 		return plan{}, dal.ErrNotSupported
 	}
 	if dal.HasAggregation(q) || dal.HasSubquery(q) || len(q.GroupBy()) != 0 || q.Having() != nil || q.StartFrom() != "" || q.StartAfter() != "" || q.IDKind() != reflect.Invalid {
@@ -86,13 +110,13 @@ func compile(query dal.Query, c Config) (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
-	b := compiler{cfg: c, table: ref.Name(), alias: ref.Alias()}
+	b := compiler{cfg: c, table: ref.Name(), alias: ref.Alias(), allowParameters: allowParameters}
 	columns := q.Columns()
 	if len(columns) > 256 || len(q.OrderBy()) > 16 {
 		return plan{}, ErrLimit
 	}
 	selected := []string{}
-	seen := map[string]bool{}
+	labels := make(map[string]string)
 	for _, col := range columns {
 		if col.Wildcard != nil {
 			return plan{}, dal.ErrNotSupported
@@ -101,6 +125,7 @@ func compile(query dal.Query, c Config) (plan, error) {
 		if err != nil {
 			return plan{}, err
 		}
+		expression := field
 		name := col.Expression.(dal.FieldRef).Name()
 		if col.Alias != "" {
 			if !identifier.MatchString(col.Alias) {
@@ -109,19 +134,19 @@ func compile(query dal.Query, c Config) (plan, error) {
 			name = col.Alias
 			field += " AS " + quote(name)
 		}
-		if seen[name] {
+		if previous, exists := labels[name]; exists && previous != expression {
 			return plan{}, dal.ErrNotSupported
 		}
-		seen[name] = true
+		labels[name] = expression
 		selected = append(selected, field)
 	}
 	if len(selected) == 0 {
 		if allowed := c.Tables[ref.Name()]; len(allowed) > 0 {
 			for _, name := range allowed {
-				selected = append(selected, quote(name))
+				selected = append(selected, quote(ref.Name())+"."+quote(name))
 			}
 		} else {
-			selected = []string{"*"}
+			selected = []string{quote(ref.Name()) + ".*"}
 		}
 	}
 	statement := "SELECT " + strings.Join(selected, ", ") + " FROM " + quote(c.Database) + "." + quote(ref.Name())
@@ -198,8 +223,18 @@ func (b *compiler) condition(c dal.Condition, depth int) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		constant, ok := v.Right.(dal.Constant)
-		if !ok || !scalar(constant.Value) {
+		var value any
+		switch right := v.Right.(type) {
+		case dal.Constant:
+			value, err = boundScalar(right.Value)
+			if err != nil {
+				return "", err
+			}
+		case dal.Param:
+			if !b.allowParameters || len(right.Name) > 128 || !dal.ValidParamName(right.Name) {
+				return "", dal.ErrNotSupported
+			}
+		default:
 			return "", dal.ErrNotSupported
 		}
 		operator := ""
@@ -217,26 +252,9 @@ func (b *compiler) condition(c dal.Condition, depth int) (string, error) {
 		default:
 			return "", dal.ErrNotSupported
 		}
-		b.args = append(b.args, constant.Value)
+		b.args = append(b.args, value)
 		return field + " " + operator + " ?", nil
 	default:
 		return "", dal.ErrNotSupported
-	}
-}
-
-// Values never enter generated SQL, and custom Stringer/Valuer methods are not
-// invoked. NULL comparisons and membership are deliberately unsupported.
-func scalar(value any) bool {
-	switch v := value.(type) {
-	case string:
-		return len(v) <= 4096
-	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, time.Time:
-		return true
-	case float32:
-		return !math.IsNaN(float64(v)) && !math.IsInf(float64(v), 0)
-	case float64:
-		return !math.IsNaN(v) && !math.IsInf(v, 0)
-	default:
-		return false
 	}
 }

@@ -54,13 +54,11 @@ func collect(ctx context.Context, rows *sql.Rows, name string, maxRows int, maxB
 		return nil, ErrLimit
 	}
 	columns := make([]recordset.Column[any], len(types))
-	seen := map[string]bool{}
 	budget := maxBytes
 	for i, col := range types {
-		if col.Name() == "" || seen[col.Name()] {
+		if col.Name() == "" {
 			return nil, ErrBackend
 		}
-		seen[col.Name()] = true
 		budget -= int64(len(col.Name()) + len(col.DatabaseTypeName()))
 		columns[i] = recordset.NewTypedColumn[any](col.Name(), nil, recordset.ColDbType(col.DatabaseTypeName()))
 	}
