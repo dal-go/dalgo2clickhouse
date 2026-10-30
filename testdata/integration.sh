@@ -190,3 +190,37 @@ http_mapping=$(docker port "$fixture" 8123/tcp)
 [[ "$http_mapping" =~ ^127\.0\.0\.1:[0-9]+$ ]] || exit 1
 export CLICKHOUSE_TEST_HTTP_ADDRESS="$http_mapping"
 go test -race -tags=integration -count=1 -timeout=3m ./...
+echo '--- ClickHouse fixture: final resource events ---' >&2
+if ! capture "$diagnostics/final-resource-events" docker exec "$fixture" sh -c '
+  [ -r /sys/fs/cgroup/pids.events ] && [ -r /sys/fs/cgroup/memory.events ] || exit 1
+  while read -r name value; do
+    case "$name" in max) printf "pids_max_events %s\n" "$value" ;; esac
+  done < /sys/fs/cgroup/pids.events
+  while read -r name value; do
+    case "$name" in
+      oom) printf "memory_oom_events %s\n" "$value" ;;
+      oom_kill) printf "memory_oom_kill_events %s\n" "$value" ;;
+    esac
+  done < /sys/fs/cgroup/memory.events
+'; then
+  echo 'Final resource event counters could not be read within the diagnostic limits.' >&2
+  exit 1
+fi
+if ! LC_ALL=C awk '
+  NF != 2 || $1 !~ /^(pids_max_events|memory_oom_events|memory_oom_kill_events)$/ || $2 !~ /^[0-9]+$/ { bad = 1 }
+  { counts[$1]++; values[$1] = $2 }
+  END {
+    split("pids_max_events memory_oom_events memory_oom_kill_events", names, " ")
+    for (i = 1; i <= 3; i++) if (counts[names[i]] != 1) bad = 1
+    if (bad) exit 1
+    for (i = 1; i <= 3; i++) print names[i], values[names[i]]
+  }
+' "$diagnostics/final-resource-events" >"$diagnostics/validated-resource-events"; then
+  echo 'Final resource event counters were missing, duplicated or malformed.' >&2
+  exit 1
+fi
+excerpt "$diagnostics/validated-resource-events"
+if ! LC_ALL=C awk '$2 != 0 { exit 1 }' "$diagnostics/validated-resource-events"; then
+  echo 'ClickHouse fixture encountered a PID denial or OOM event despite passing Go tests.' >&2
+  exit 1
+fi

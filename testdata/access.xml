@@ -10,7 +10,7 @@
          Explicit small positive thresholds preserve that validation. This is
          a fixture tuning candidate, not proof of the startup failure cause.
          Actual image boot and every real assertion remain CI gates. -->
-    <max_thread_pool_size>64</max_thread_pool_size>
+    <max_thread_pool_size>96</max_thread_pool_size>
     <max_thread_pool_free_size>8</max_thread_pool_free_size>
     <background_pool_size>2</background_pool_size>
     <background_merges_mutations_concurrency_ratio>2</background_merges_mutations_concurrency_ratio>

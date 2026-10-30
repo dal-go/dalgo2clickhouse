@@ -133,13 +133,19 @@ two merge/mutation workers, one streaming-scheduler worker, a concurrency ratio
 of two and three positive free-entry thresholds of one. The [related MergeTree thresholds](https://clickhouse.com/docs/reference/settings/server-settings/settings/background#background_pool_size)
 must fit the executor's four-task capacity. This tuning is a candidate to test,
 not confirmation that the observed initialization stall is pool starvation.
+The internal global thread-pool ceiling is now 96 instead of 64 for a causal
+comparison; the external 128-PID, 2 GiB, zero-swap and two-CPU limits are unchanged.
+After the real Go tests pass, a bounded read of the owned container's cgroup
+counters must show zero PID-limit events, OOM events and OOM kills; otherwise
+the integration check fails despite passing tests.
 Failure diagnostics include thread-name/wait-channel counts and selected process
 and cgroup counters without depending on SQL. Metadata-file presence reports
 database/table metadata persistence without claiming DDL or row insertion
 completed. A metrics-only listener on port 9363 stays inside the owned container,
 with no Docker port publication. On failure, a private HTTP capture uses the
 same 2 MiB/five-second limits and prints only the three validated global-thread
-counters; the existing teardown removes this listener with its container.
+counters when available; missing or malformed counters are a diagnostic failure,
+not occupancy evidence. The existing teardown removes this listener with its container.
 Actual startup under those limits
 remains a mandatory CI check. It initializes
 synthetic data and a read-only profile, runs the real
